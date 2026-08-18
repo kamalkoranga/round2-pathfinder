@@ -1,0 +1,171 @@
+// PathFinder data model.
+//
+// Design note: the recommendation engine stays pure and deterministic — it
+// recomputes gaps and rankings from the profile on every request. What we
+// persist is the things that genuinely cannot be recomputed:
+//
+//   · what they told us            (LearnerProfile, SkillLevel)
+//   · what they did                (Completion, Feedback)
+//   · the plan they were given     (LearningPath + Milestone + PathStep)
+//
+// Identity is Supabase Auth's job — users live in auth.users, and our tables
+// reference that id. We never mirror or duplicate credentials.
+//
+// That last one matters. A path is a *snapshot*: the catalog, the weights or the
+// learner's own profile may change later, and a learner following a plan should
+// not have it silently rewritten underneath them. Regenerating is an explicit
+// action that creates a new path and archives the old one.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 moved connection URLs out of the schema and into prisma.config.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Learner profiling
+// ---------------------------------------------------------------------------
+
+model LearnerProfile {
+  id String @id @default(cuid())
+
+  /// Supabase auth user id (auth.users.id). Not a Prisma relation: that table
+  /// lives in the `auth` schema, which GoTrue owns and Prisma does not migrate.
+  userId String @unique @db.Uuid
+
+  displayName  String?
+  goalText     String  @default("")
+  roleId       String?
+  level        String  @default("beginner")
+  hoursPerWeek Int     @default(8)
+  style        String  @default("mixed")
+  pace         String  @default("steady")
+  targetWeeks  Int?
+
+  /// Skill ids the learner said they want to develop.
+  interests String[] @default([])
+
+  /// True once the guided intake has collected every required answer.
+  intakeComplete Boolean @default(false)
+
+  /// Verbatim intake conversation, kept so the assistant can resume with context
+  /// and so we can audit what the learner was actually asked.
+  intakeTranscript Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  skills      SkillLevel[]
+  completions Completion[]
+  feedback    Feedback[]
+}
+
+/// Per-skill self-assessed mastery, 0–1.
+model SkillLevel {
+  id        String @id @default(cuid())
+  profileId String
+  skillId   String
+  value     Float
+
+  profile LearnerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, skillId])
+  @@index([profileId])
+}
+
+/// A resource the learner has finished.
+model Completion {
+  id          String   @id @default(cuid())
+  profileId   String
+  resourceId  String
+  completedAt DateTime @default(now())
+
+  profile LearnerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, resourceId])
+  @@index([profileId])
+}
+
+/// Thumbs up/down, feeding the adaptive re-ranker.
+model Feedback {
+  id         String   @id @default(cuid())
+  profileId  String
+  resourceId String
+  signal     String
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  profile LearnerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, resourceId])
+  @@index([profileId])
+}
+
+// ---------------------------------------------------------------------------
+// Generated paths (snapshots)
+// ---------------------------------------------------------------------------
+
+model LearningPath {
+  id String @id @default(cuid())
+
+  /// Supabase auth user id (auth.users.id).
+  userId String @db.Uuid
+
+  goal       String
+  roleId     String?
+  roleTitle  String
+  totalHours Int
+  totalWeeks Int
+
+  /// Only one path per user is active at a time; regenerating archives the rest.
+  isActive Boolean @default(true)
+
+  /// The skill gaps as they stood when this path was generated — this is what
+  /// makes the snapshot explainable months later.
+  gaps Json
+
+  /// Projected mastery per skill after completing the path.
+  projected Json
+
+  createdAt DateTime @default(now())
+
+  milestones Milestone[]
+
+  @@index([userId, isActive])
+}
+
+model Milestone {
+  id     String @id @default(cuid())
+  pathId String
+  path   LearningPath @relation(fields: [pathId], references: [id], onDelete: Cascade)
+
+  position Int
+  title    String
+  summary  String
+  hours    Int
+  weekEnd  Int
+  skills   String[] @default([])
+
+  steps PathStep[]
+
+  @@index([pathId])
+}
+
+model PathStep {
+  id          String @id @default(cuid())
+  milestoneId String
+  milestone   Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  /// Position across the whole path, not just this milestone.
+  position   Int
+  resourceId String
+  reason     String
+  score      Float
+  closesGaps String[] @default([])
+
+  @@index([milestoneId])
+}
