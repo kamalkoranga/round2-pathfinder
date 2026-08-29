@@ -1,17 +1,15 @@
-# PathFinder — AI-Powered Personalised Learning Path Recommender
+# PathFinder — personalised learning paths
 
-Describe your goal in plain language. PathFinder works out which skills you are
-missing, then builds a **sequenced** roadmap of courses, projects and
-checkpoints — prerequisites in the right order, milestones time-boxed to your
-availability, and a reason attached to every single step.
+PathFinder takes a learning goal and turns it into a practical sequence of
+courses, projects, and checkpoints. It looks at the learner's current skills,
+fills the important gaps first, and explains why each item was selected.
 
-> Most course platforms answer *"what could I take?"*. The hard question is
-> *"what should I take, in what order, and why?"* — that is the problem
-> PathFinder solves.
+The main idea is simple: finding resources is easy; deciding what to do next,
+and in what order, is the harder part.
 
 **Live app:** <https://pathfinder-nine-theta.vercel.app>
+
 **Repository:** <https://github.com/kamalkoranga/round2-pathfinder>
-**Demo video:** `docs/PathFinder-Demo.mp4` (2m40s, 1080p, captioned)
 
 ---
 
@@ -40,17 +38,16 @@ availability, and a reason attached to every single step.
 | AI assistant that explains recommendations and answers queries | `POST /api/explain`, `POST /api/ask`, `/assistant` |
 | Dashboard: progress, skill development, milestones, next actions | `/dashboard`, `src/components/SkillRadar.tsx` |
 
-Beyond the brief:
+A couple of things that are easy to miss:
 
-- **Deadline feasibility** — if you say "in 6 months" and the plan needs ten,
-  PathFinder says so, tells you the weekly hours that *would* make it fit, and
-  offers a one-click fix.
-- **Goal vs. current role disambiguation** — "I'm a backend developer moving into
-  ML" targets ML Engineer, and credits backend as an *existing* skill rather than
-  a goal.
+- **Deadline feasibility** — if the requested deadline does not fit the current
+  plan, the app works out the weekly hours needed and offers a quick adjustment.
+- **Current role vs. target role** — someone saying "I'm a backend developer
+  moving into ML" gets credit for their backend skills instead of being treated
+  as a beginner.
 
-**Adaptation is the through-line.** Every thumbs-up/down re-ranks the entire
-path, and the app tells you in plain English what changed and why.
+Feedback also changes the rest of the plan, rather than only hiding the item
+that was disliked.
 
 ---
 
@@ -199,9 +196,10 @@ interests.
 Role matching combines the same cosine with an exact keyword-phrase bonus,
 because role names are short high-precision signals that pure TF-IDF underweights.
 
-> **A real bug this caught:** the stemmer folds `learning → learn`, so *every*
-> "I want to learn X" matched the Machine **Learning** role. Fixed with a
-> domain-specific stopword list; see `STOPWORDS` in `vectorize.ts`.
+One bug worth noting: the stemmer turns `learning` into `learn`, which
+caused generic phrases such as "I want to learn X" to match the Machine Learning
+role. The role matcher now uses a domain-specific stopword list (`STOPWORDS` in
+`vectorize.ts`).
 
 ### 4. Ranking
 
@@ -261,15 +259,15 @@ implements them for **Gemini** (`@google/genai`) and **Claude**
 | `complete` — one-shot text | `/api/explain` | `models.generateContent` | `messages.stream().finalMessage()` |
 | `stream` — token deltas | `/api/ask` | `models.generateContentStream` | `messages.stream()` |
 
-**`POST /api/intake`** turns messy free text into a validated profile. Whatever
-the model returns is re-parsed with Zod, and every skill and role id is checked
-against the taxonomy — a hallucinated id can never reach the engine.
+**`POST /api/intake`** turns free-form text into a validated profile. The
+result is parsed with Zod, and skill and role ids are checked against the
+taxonomy before they reach the recommendation engine.
 
-**`POST /api/explain`** receives the full six-component score breakdown and
-writes 2–3 grounded sentences.
+**`POST /api/explain`** gets the six score components and turns them into
+a short explanation.
 
-**`POST /api/ask`** is the streaming tutor; the system prompt carries the
-learner's profile, gaps, generated path and active feedback adaptations.
+**`POST /api/ask`** is the streaming tutor. It gets the learner profile,
+current gaps, generated path, and feedback adjustments as context.
 
 Engineering notes:
 
@@ -279,7 +277,8 @@ Engineering notes:
 - Provider SDKs are imported lazily, so the unused vendor is never loaded.
 - Streaming responses fail *during iteration*, not at call time, so `/api/ask`
   catches inside the stream and emits a useful local answer if nothing streamed yet.
-- Prompts explicitly forbid inventing courses, scores or skills not in context.
+- Prompts tell the model to stick to the courses, scores, and skills
+  provided by the app.
 
 ---
 
@@ -351,11 +350,13 @@ docker build -t pathfinder . && docker run -p 3000:3000 pathfinder
 ## Design decisions
 
 **Why a local engine instead of asking an LLM for the path?**
-Asking a model to emit a course list gives you a different answer every time,
-with no score to inspect, courses that may not exist, and no guarantee the
-ordering respects prerequisites. Making retrieval, scoring and sequencing
-deterministic means results are reproducible, auditable, instant and free — and
-gives the model something factual to explain rather than something to invent.
+The path needs to be predictable. If an LLM generated the whole thing, the
+result could change between runs, include resources that are not in the
+catalog, or put prerequisites in the wrong order.
+
+Here retrieval, scoring, and sequencing are deterministic. The model is used
+for the parts where natural language is actually useful: understanding the
+initial goal, explaining a recommendation, and answering questions.
 
 **Why no database?**
 The learner record is small and belongs to the learner. localStorage means zero
@@ -364,22 +365,23 @@ moment the page opens. The state shape in `src/lib/store.ts` maps directly onto 
 `users` table when multi-device sync is wanted.
 
 **Why a synthetic catalog?**
-79 resources modelled on real platforms, with the structure a real catalog has
-(provider, level, hours, rating, taught skills with depth, prerequisite skills).
-It keeps the project self-contained and reproducible. Nothing in the engine is
-coupled to these rows — swapping in a live catalog API means replacing
-`src/lib/data/catalog.ts` and nothing else.
+The 79 catalog entries are synthetic, but they have the fields a real catalog
+would need: provider, level, estimated hours, rating, skills, and prerequisites.
+That keeps the project self-contained.
+
+The engine is not tied to these particular rows, so a live catalog could be
+plugged in through `src/lib/data/catalog.ts`.
 
 **Why show the score breakdown?**
-"Trust me" is not an explanation. Showing the six weighted components turns the
-recommender from a black box into something a learner can argue with — and
-arguing with it, via thumbs up/down, is exactly how it improves.
+The six components make it possible to see why an item ranked where it did.
+That also makes the feedback controls more useful: the learner can disagree
+with the recommendation, and the system can adjust future rankings.
 
 ---
 
 ## Limitations
 
-Stated plainly:
+There are a few important limitations:
 
 - **The catalog is synthetic.** Realistic in structure, but these are not live
   course listings and carry no URLs — I would rather ship no link than a
